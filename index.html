@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Stroik – gitara i ukulele</title>
+<style>
+  :root {
+    --bg: #14110f;
+    --panel: #201b17;
+    --line: #3a322b;
+    --text: #f3ece2;
+    --muted: #9b8f80;
+    --ok: #7bd88f;
+    --low: #ff7a59;   /* za nisko -> napnij */
+    --high: #f2c14e;  /* za wysoko -> poluzuj */
+    --accent: #e9dcc6;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
+    display: flex; justify-content: center; align-items: center;
+    padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom));
+  }
+  .card { width: 100%; max-width: 400px; background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 18px; }
+  .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 14px; }
+  .seg button, .strings button, #startBtn {
+    font: inherit; border: 1px solid var(--line); background: transparent; color: var(--muted);
+    border-radius: 10px; padding: 11px 6px; cursor: pointer;
+  }
+  .seg button.on { background: var(--accent); color: #1c1713; border-color: var(--accent); font-weight: 700; }
+  .strings { display: flex; gap: 6px; margin-bottom: 18px; }
+  .strings button { flex: 1; padding: 10px 0; font-size: .95rem; }
+  .strings button.auto { flex: 1.5; }
+  .strings button.locked { border-color: var(--accent); color: var(--text); }
+  .strings button.hit { background: #2d261f; color: var(--text); }
+  .strings button.hit.good { border-color: var(--ok); color: var(--ok); }
+  .note { text-align: center; font-size: 5rem; font-weight: 700; line-height: 1; min-height: 5rem; transition: color .15s; }
+  .hz { text-align: center; color: var(--muted); margin: 4px 0 18px; font-variant-numeric: tabular-nums; }
+  .meter { position: relative; height: 54px; margin-bottom: 14px; }
+  .meter .bar { position: absolute; left: 0; right: 0; top: 22px; height: 10px; border-radius: 5px; background: #2d261f; }
+  .meter .tick { position: absolute; top: 14px; width: 2px; height: 26px; background: var(--line); transform: translateX(-50%); }
+  .meter .tick.c { background: var(--accent); top: 8px; height: 38px; }
+  .meter .lbl { position: absolute; top: 44px; font-size: .7rem; color: var(--muted); transform: translateX(-50%); }
+  .pointer { position: absolute; top: 12px; width: 10px; height: 30px; border-radius: 5px; background: var(--muted); left: 50%; transform: translateX(-50%); transition: left .12s ease-out, background .12s; }
+  .msg { text-align: center; font-size: 1.25rem; font-weight: 700; min-height: 3.2rem; line-height: 1.3; }
+  .msg small { display: block; font-weight: 400; font-size: .85rem; color: var(--muted); }
+  .low { color: var(--low); } .high { color: var(--high); } .ok { color: var(--ok); }
+  #startBtn { width: 100%; margin-top: 14px; background: var(--accent); color: #1c1713; font-weight: 700; padding: 14px; font-size: 1rem; }
+  #startBtn.stop { background: transparent; color: var(--muted); font-weight: 400; }
+  .idle { opacity: .45; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="seg" id="instSeg">
+    <button data-inst="guitar" class="on">Gitara (6 strun)</button>
+    <button data-inst="ukulele">Ukulele (4 struny)</button>
+  </div>
+  <div class="strings" id="strings"></div>
+
+  <div id="display" class="idle">
+    <div class="note" id="note">–</div>
+    <div class="hz" id="hz">0,0 Hz</div>
+  </div>
+
+  <div class="meter">
+    <div class="bar"></div>
+    <div class="tick" style="left:0%"></div>
+    <div class="tick" style="left:25%"></div>
+    <div class="tick c" style="left:50%"></div>
+    <div class="tick" style="left:75%"></div>
+    <div class="tick" style="left:100%"></div>
+    <div class="lbl" style="left:4%">-50</div>
+    <div class="lbl" style="left:50%">0</div>
+    <div class="lbl" style="left:96%">+50</div>
+    <div class="pointer" id="pointer"></div>
+  </div>
+
+  <div class="msg" id="msg">Włącz mikrofon i szarpnij strunę</div>
+  <button id="startBtn">Włącz mikrofon</button>
+</div>
+
+<script>
+const TUNINGS = {
+  guitar: [
+    { note: 'E2', freq: 82.41 }, { note: 'A2', freq: 110.00 }, { note: 'D3', freq: 146.83 },
+    { note: 'G3', freq: 196.00 }, { note: 'B3', freq: 246.94 }, { note: 'E4', freq: 329.63 }
+  ],
+  // ukulele z wysokim G (re-entrant): G4 C4 E4 A4
+  ukulele: [
+    { note: 'G4', freq: 392.00 }, { note: 'C4', freq: 261.63 },
+    { note: 'E4', freq: 329.63 }, { note: 'A4', freq: 440.00 }
+  ]
+};
+const RANGE = { guitar: [70, 380], ukulele: [230, 500] };
+const IN_TUNE = 4;       // tolerancja w centach
+const HOLD_MS = 1500;    // jak długo trzymać wynik po wyciszeniu struny
+
+const $ = id => document.getElementById(id);
+let instrument = 'guitar', lockedIdx = null;
+let ctx = null, analyser = null, stream = null, buf = null, running = false;
+let history = [], lastSignal = 0, lastRun = 0, wakeLock = null;
+
+/* ---------- UI ---------- */
+function renderStrings() {
+  const box = $('strings'); box.innerHTML = '';
+  const auto = document.createElement('button');
+  auto.className = 'auto' + (lockedIdx === null ? ' locked' : '');
+  auto.textContent = 'Auto';
+  auto.onclick = () => { lockedIdx = null; renderStrings(); };
+  box.appendChild(auto);
+  TUNINGS[instrument].forEach((s, i) => {
+    const b = document.createElement('button');
+    b.textContent = s.note;
+    b.dataset.i = i;
+    if (lockedIdx === i) b.classList.add('locked');
+    b.onclick = () => { lockedIdx = (lockedIdx === i) ? null : i; renderStrings(); };
+    box.appendChild(b);
+  });
+}
+document.querySelectorAll('#instSeg button').forEach(b => b.onclick = () => {
+  instrument = b.dataset.inst; lockedIdx = null; history = [];
+  document.querySelectorAll('#instSeg button').forEach(x => x.classList.toggle('on', x === b));
+  renderStrings(); resetDisplay();
+});
+renderStrings();
+
+function resetDisplay(text) {
+  $('display').classList.add('idle');
+  $('note').textContent = '–';
+  $('note').className = 'note';
+  $('hz').textContent = '0,0 Hz';
+  $('pointer').style.left = '50%';
+  $('pointer').style.background = 'var(--muted)';
+  document.querySelectorAll('#strings button').forEach(b => b.classList.remove('hit', 'good'));
+  if (text) $('msg').innerHTML = text;
+}
+
+/* ---------- Mikrofon ---------- */
+$('startBtn').onclick = async () => {
+  if (running) return stop();
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      video: false
+    });
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === 'suspended') await ctx.resume();
+    const src = ctx.createMediaStreamSource(stream);
+    analyser = ctx.createAnalyser();
+    analyser.fftSize = 4096;
+    analyser.smoothingTimeConstant = 0;
+    src.connect(analyser);
+    buf = new Float32Array(analyser.fftSize);
+    running = true;
+    $('startBtn').textContent = 'Wyłącz mikrofon';
+    $('startBtn').classList.add('stop');
+    $('msg').textContent = 'Szarpnij strunę';
+    try { if (navigator.wakeLock) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+    loop();
+  } catch (err) {
+    $('msg').innerHTML = 'Brak dostępu do mikrofonu<small>Zezwól na mikrofon w ustawieniach przeglądarki i odśwież stronę.</small>';
+  }
+};
+function stop() {
+  running = false;
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  if (ctx) ctx.close();
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  $('startBtn').textContent = 'Włącz mikrofon';
+  $('startBtn').classList.remove('stop');
+  history = [];
+  resetDisplay('Włącz mikrofon i szarpnij strunę');
+}
+
+/* ---------- Detekcja wysokości dźwięku (algorytm YIN) ---------- */
+function detectPitch(x, sr, minF, maxF) {
+  let rms = 0;
+  for (let i = 0; i < x.length; i++) rms += x[i] * x[i];
+  rms = Math.sqrt(rms / x.length);
+  if (rms < 0.008) return -1;
+
+  const W = x.length >> 1;
+  const tauMin = Math.max(2, Math.floor(sr / maxF));
+  const tauMax = Math.min(W - 1, Math.floor(sr / minF));
+  const d = new Float32Array(tauMax + 2);
+  for (let tau = 1; tau <= tauMax + 1 && tau < W; tau++) {
+    let sum = 0;
+    for (let i = 0; i < W; i++) { const v = x[i] - x[i + tau]; sum += v * v; }
+    d[tau] = sum;
+  }
+  // znormalizowana różnica średniej kumulacyjnej
+  const dp = new Float32Array(d.length);
+  dp[0] = 1; let run = 0;
+  for (let tau = 1; tau < d.length; tau++) { run += d[tau]; dp[tau] = run ? d[tau] * tau / run : 1; }
+
+  let tau = -1;
+  for (let t = tauMin; t <= tauMax; t++) {
+    if (dp[t] < 0.12) { while (t + 1 <= tauMax && dp[t + 1] < dp[t]) t++; tau = t; break; }
+  }
+  if (tau < 0) {
+    let m = Infinity;
+    for (let t = tauMin; t <= tauMax; t++) if (dp[t] < m) { m = dp[t]; tau = t; }
+    if (m > 0.3) return -1;
+  }
+  const a = dp[tau - 1], b = dp[tau], c = dp[tau + 1];
+  const den = 2 * (2 * b - a - c);
+  const shift = den ? (c - a) / den : 0;
+  return sr / (tau + shift);
+}
+
+const median = arr => { const s = [...arr].sort((p, q) => p - q); return s[s.length >> 1]; };
+const centsBetween = (f, ref) => 1200 * Math.log2(f / ref);
+
+function pickTarget(freq) {
+  const strings = TUNINGS[instrument];
+  if (lockedIdx !== null) return lockedIdx;
+  let best = 0, bd = Infinity;
+  strings.forEach((s, i) => { const dd = Math.abs(centsBetween(freq, s.freq)); if (dd < bd) { bd = dd; best = i; } });
+  return best;
+}
+
+/* ---------- Pętla ---------- */
+function loop(now = 0) {
+  if (!running) return;
+  requestAnimationFrame(loop);
+  if (now - lastRun < 40) return;
+  lastRun = now;
+
+  analyser.getFloatTimeDomainData(buf);
+  const [lo, hi] = RANGE[instrument];
+  const f = detectPitch(buf, ctx.sampleRate, lo, hi);
+
+  if (f > 0) {
+    lastSignal = now;
+    // odrzuć skok o >1 półton względem historii (szarpnięcie nowej struny = reset)
+    if (history.length && Math.abs(centsBetween(f, median(history))) > 100) history = [];
+    history.push(f); if (history.length > 5) history.shift();
+    show(median(history));
+  } else if (now - lastSignal > HOLD_MS && lastSignal !== 0) {
+    history = [];
+    resetDisplay('Szarpnij strunę');
+    lastSignal = 0;
+  }
+}
+
+function show(freq) {
+  const strings = TUNINGS[instrument];
+  const idx = pickTarget(freq);
+  const t = strings[idx];
+  const cents = centsBetween(freq, t.freq);
+  const clamped = Math.max(-50, Math.min(50, cents));
+
+  $('display').classList.remove('idle');
+  $('note').textContent = t.note;
+  $('hz').textContent = `${freq.toFixed(1).replace('.', ',')} Hz  →  cel ${t.freq.toFixed(2).replace('.', ',')} Hz`;
+  $('pointer').style.left = (50 + clamped) + '%';
+
+  const ok = Math.abs(cents) <= IN_TUNE;
+  document.querySelectorAll('#strings button').forEach(b => {
+    const hit = b.dataset.i !== undefined && +b.dataset.i === idx;
+    b.classList.toggle('hit', hit);
+    b.classList.toggle('good', hit && ok);
+  });
+
+  const sign = cents > 0 ? '+' : '';
+  const centsTxt = `${sign}${cents.toFixed(0)} centów`;
+  const msg = $('msg'), ptr = $('pointer'), note = $('note');
+  if (ok) {
+    msg.className = 'msg ok'; msg.innerHTML = 'Nastrojona ✓';
+    ptr.style.background = 'var(--ok)'; note.className = 'note ok';
+  } else if (cents < 0) {
+    msg.className = 'msg low'; msg.innerHTML = `Za nisko – napnij strunę ↑<small>${centsTxt}</small>`;
+    ptr.style.background = 'var(--low)'; note.className = 'note low';
+  } else {
+    msg.className = 'msg high'; msg.innerHTML = `Za wysoko – poluzuj strunę ↓<small>${centsTxt}</small>`;
+    ptr.style.background = 'var(--high)'; note.className = 'note high';
+  }
+}
+</script>
+</body>
+</html>
